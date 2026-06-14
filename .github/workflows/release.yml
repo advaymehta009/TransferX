@@ -40,8 +40,22 @@ jobs:
         python -m pip install --upgrade pip
         pip install pyinstaller .
 
-    - name: Execute PyInstaller Engine Build
-      run: pyinstaller --onefile --console --name TransferX main.py
+    - name: Setup UPX Compressor (Windows/Linux)
+      if: matrix.os != 'macos-latest'
+      uses: crazy-max/ghaction-upx@v3
+      with:
+        install-only: true
+
+    - name: Execute Optimized PyInstaller Engine Build
+      # Run Python with -OO optimization and exclude bulky unused packages
+      run: |
+        python -OO -m PyInstaller --onefile --console --name TransferX \
+          --exclude-module tkinter \
+          --exclude-module unittest \
+          --exclude-module email \
+          --exclude-module pydoc \
+          --exclude-module lib2to3 \
+          main.py
 
     - name: Package and Compress Binaries
       shell: bash
