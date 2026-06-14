@@ -47,15 +47,14 @@ jobs:
         install-only: true
 
     - name: Execute Optimized PyInstaller Engine Build
-      shell: bash
-      run: |
-        python -OO -m PyInstaller --onefile --console --name TransferX \
-          --exclude-module tkinter \
-          --exclude-module unittest \
-          --exclude-module email \
-          --exclude-module pydoc \
-          --exclude-module lib2to3 \
-          main.py
+          shell: bash
+          run: |
+            python -OO -m PyInstaller --onefile --console --name TransferX \
+              --exclude-module tkinter \
+              --exclude-module unittest \
+              --exclude-module pydoc \
+              --exclude-module lib2to3 \
+              main.py
 
     - name: Package and Compress Binaries
       shell: bash
