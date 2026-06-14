@@ -111,6 +111,20 @@ transferX/
 └── pyproject.toml
 ```
 
+## 🚀 Installation & Setup
+
+Download the optimized standalone binary for your operating system from the **Releases** tab.
+
+### 🪟 Windows
+1. Download `TransferX_Windows.exe`.
+2. Double-click the file to launch the service in your Command Prompt/PowerShell.
+
+### 🍏 macOS
+1. Download and extract `TransferX_Mac.zip`.
+2. Open your terminal, navigate to the folder where you extracted it, and run this command to bypass Apple Gatekeeper security permissions:
+```bash
+   xattr -d com.apple.quarantine TransferX_Mac
+
 ## Requirements
 
 Python 3.11+ · `cryptography` · `segno` (both auto-installed by `uv sync`)
