@@ -3,10 +3,10 @@ name: Automated Multi-OS Release Compiler
 on:
   push:
     tags:
-      - 'v*' # Triggers automatically when you push a version tag like v1.0.0
+      - 'v*'
 
 permissions:
-  contents: write # Allows the workflow to create a GitHub Release and upload binaries
+  contents: write
 
 jobs:
   build:
@@ -16,13 +16,13 @@ jobs:
       matrix:
         include:
           - os: windows-latest
-            artifact_name: TransferX_Windows.exe
+            asset_name: TransferX_Windows.exe
             output_binary: dist/TransferX.exe
           - os: macos-latest
-            artifact_name: TransferX_Mac
+            asset_name: TransferX_Mac.zip
             output_binary: dist/TransferX
           - os: ubuntu-latest
-            artifact_name: TransferX_Linux
+            asset_name: TransferX_Linux.zip
             output_binary: dist/TransferX
 
     steps:
@@ -43,14 +43,24 @@ jobs:
     - name: Execute PyInstaller Engine Build
       run: pyinstaller --onefile --console --name TransferX main.py
 
-    - name: Prepare Binary Artifact with OS Name
+    - name: Package and Compress Binaries
       shell: bash
       run: |
-        mv ${{ matrix.output_binary }} dist/${{ matrix.artifact_name }}
+        if [ "${{ matrix.os }}" = "windows-latest" ]; then
+          mv ${{ matrix.output_binary }} dist/${{ matrix.asset_name }}
+        elif [ "${{ matrix.os }}" = "macos-latest" ]; then
+          mv ${{ matrix.output_binary }} dist/TransferX_Mac
+          chmod +x dist/TransferX_Mac
+          cd dist && zip -r TransferX_Mac.zip TransferX_Mac
+        else
+          mv ${{ matrix.output_binary }} dist/TransferX_Linux
+          chmod +x dist/TransferX_Linux
+          cd dist && zip -r TransferX_Linux.zip TransferX_Linux
+        fi
 
     - name: Upload Binary to GitHub Release Page
       uses: softprops/action-gh-release@v2
       with:
-        files: dist/${{ matrix.artifact_name }}
+        files: dist/${{ matrix.asset_name }}
       env:
         GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
