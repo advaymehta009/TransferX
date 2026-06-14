@@ -11,9 +11,9 @@ uv run python main.py ~/Downloads/media
 ══════════════════════════════════════════════════════════════════════════
   ⚡  TRANSFERX  — local-network turbo engine
 ══════════════════════════════════════════════════════════════════════════
-  Share root  : /Users/advaym/Downloads/media
-  IP link     : https://192.168.1.42:54823
-  mDNS link   : https://advaym-mbp.local:54823  (same LAN, no IP needed)
+  Share root  : /Users/{username}/Downloads/media
+  IP link     : https://xx.xxx.x.xx:{some_random_port}
+  mDNS link   : https://{local_url}.local:{some_random_port}  (same LAN, no IP needed)
   Exit        : type q and Enter  |  or Ctrl-C
 ────────────────────────────────────────────────────────────────────────
 
