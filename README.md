@@ -124,6 +124,9 @@ Download the optimized standalone binary for your operating system from the **Re
 2. Open your terminal, navigate to the folder where you extracted it, and run this command to bypass Apple Gatekeeper security permissions:
 ```bash
    xattr -d com.apple.quarantine TransferX_Mac
+```
+
+&nbsp;
 
 ## Requirements
 
