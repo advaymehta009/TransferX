@@ -8,3 +8,6 @@ dependencies = [
     "cryptography>=47.0.0",
     "segno>=1.6.6",
 ]
+
+[tool.setuptools]
+py-modules = ["main", "server", "logger", "tunnel", "dashboard", "tracker", "web_ui"]
