@@ -47,7 +47,7 @@ jobs:
         install-only: true
 
     - name: Execute Optimized PyInstaller Engine Build
-      # Run Python with -OO optimization and exclude bulky unused packages
+      shell: bash
       run: |
         python -OO -m PyInstaller --onefile --console --name TransferX \
           --exclude-module tkinter \
