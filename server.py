@@ -33,6 +33,7 @@ from urllib.parse import parse_qs, unquote
 
 import logger
 import tunnel
+import uploader as _uploader_mod
 import web_ui
 from dashboard import TerminalDashboard
 from tracker import BUFFER_SIZE, TransferTracker
@@ -46,8 +47,9 @@ _HIDDEN = {
 }
 
 # Set by main.py before the server starts
-SESSION_TOKEN:  str  = ''
-WAN_MODE_ACTIVE: bool = False   # True when a Cloudflare tunnel is running
+SESSION_TOKEN:   str  = ''
+WAN_MODE_ACTIVE: bool = False
+UPLOAD_MGR: _uploader_mod.UploadManager | None = None
 
 
 # ---- Helpers ----------------------------------------------------------------
@@ -180,6 +182,13 @@ class TurboHandler(http.server.SimpleHTTPRequestHandler):
     def do_POST(self):
         tok     = SESSION_TOKEN
         referer = self.headers.get('Referer', '')
+
+        # Chunked parallel upload
+        if self.path == f'/{tok}/upload-chunk':
+            self._handle_upload_chunk()
+            return
+
+        # Batch download endpoint
         if not (self.path == f'/{tok}/batch' or
                 (self.path == '/batch' and f'/{tok}/' in referer)):
             self._forbidden()
@@ -261,6 +270,106 @@ class TurboHandler(http.server.SimpleHTTPRequestHandler):
                                           '', 'WARN')
         else:
             self.send_error(400, 'Unknown action')
+
+    # ---- POST /<token>/upload-chunk (parallel chunked upload) ---------------
+
+    def _handle_upload_chunk(self):
+        """
+        Receive one raw binary chunk of a multi-part parallel upload.
+
+        Required headers:
+          X-File-Id:     UUID identifying this upload session
+          X-Filename:    URL-encoded original filename
+          X-Part:        0-based chunk index
+          X-Total-Parts: total number of chunks for this file
+          X-File-Size:   total file size in bytes
+
+        Body: raw binary (no multipart wrapper — zero overhead).
+
+        The UploadManager writes each chunk directly to its byte offset
+        in the pre-allocated destination file via os.pwrite (GIL-free,
+        atomic, no locking between threads writing different offsets).
+        """
+        client_ip = self._real_ip()
+        self._touch_wan()
+
+        h = self.headers
+        file_id     = h.get('X-File-Id', '').strip()
+        raw_name    = h.get('X-Filename', 'upload').strip()
+        part_str    = h.get('X-Part', '0')
+        total_str   = h.get('X-Total-Parts', '1')
+        size_str    = h.get('X-File-Size', '0')
+        content_len = int(h.get('Content-Length', '0'))
+
+        if not file_id or content_len <= 0:
+            self.send_error(400, 'Missing chunk headers')
+            return
+
+        try:
+            part        = int(part_str)
+            total_parts = int(total_str)
+            file_size   = int(size_str)
+        except ValueError:
+            self.send_error(400, 'Invalid chunk headers')
+            return
+
+        # Read chunk from socket in 1MB pieces (releases GIL each time)
+        data = bytearray()
+        remaining = content_len
+        while remaining > 0:
+            chunk = self.rfile.read(min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            data.extend(chunk)
+            remaining -= len(chunk)
+
+        if not data:
+            self.send_error(400, 'Empty chunk body')
+            return
+
+        # ACK the client IMMEDIATELY after reading the body.
+        # This is critical for WAN/Cloudflare: the tunnel has its own
+        # request timeout. If we pwrite to disk first and THEN respond,
+        # the browser XHR hangs at 100% until the response arrives.
+        # By responding first, the browser sees instant completion and
+        # the disk write happens concurrently in this same thread.
+        # (The thread is still alive after wfile.write returns.)
+        import json as _json
+        ack = _json.dumps({'ok': True, 'part': part}).encode()
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/json')
+        self.send_header('Content-Length', str(len(ack)))
+        self.end_headers()
+        try:
+            self.wfile.write(ack)
+            self.wfile.flush()
+        except (BrokenPipeError, ConnectionResetError):
+            return   # client dropped - skip disk write for this chunk
+
+        # Now write to disk (NVMe: ~microseconds for 4MB, GIL released)
+        try:
+            done, fname, nbytes, elapsed = UPLOAD_MGR.receive_chunk(
+                file_id=file_id,
+                raw_filename=raw_name,
+                part=part,
+                total_parts=total_parts,
+                file_size=file_size,
+                data=bytes(data),
+            )
+        except Exception as e:
+            logger.log('WARN', 'Chunk write error', {'error': str(e)})
+            return
+
+        if done:
+            speed = (nbytes / (1024**2)) / elapsed if elapsed > 0 else 0
+            TerminalDashboard.log_row(client_ip, 'Upload complete', fname, 'SUCCESS')
+            logger.log('INFO', 'File Uploaded', {
+                'device': self._device(),
+                'saved_name': fname,
+                'size_bytes': nbytes,
+                'avg_speed_mbps': round(speed, 2),
+                'duration_s': round(elapsed, 2),
+            })
 
     # ---- GET / HEAD ---------------------------------------------------------
 
@@ -448,3 +557,13 @@ class TurboServer(socketserver.ThreadingMixIn, socketserver.TCPServer):
     allow_reuse_address = True
     daemon_threads      = True
     request_queue_size  = 64
+
+    def handle_error(self, request, client_address):
+        """Suppress BrokenPipeError / ConnectionResetError noise in the terminal.
+        These are normal for cancelled downloads/uploads — not real errors."""
+        import sys
+        exc = sys.exc_info()[1]
+        if isinstance(exc, (BrokenPipeError, ConnectionResetError)):
+            return
+        # For genuine errors, still print them
+        super().handle_error(request, client_address)

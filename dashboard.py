@@ -70,28 +70,23 @@ class TerminalDashboard:
     # ── banner ────────────────────────────────────────────────────────────────
 
     @staticmethod
-    def clear_banner(serve: str, share_dir: str, local_url: str | None,
-                     token: str, tunnel_url: str | None = None,
+    def clear_banner(serve: str, share_dir: str,
+                     urls,           # mdns.URLs | None
+                     token: str,
+                     tunnel_url: str | None = None,
                      idle_timeout: int = 10) -> None:
-        """
-        serve: 'local' | 'wan' | 'both'
-        local_url: None when serve=='wan'
-        tunnel_url: None until cloudflared reports back
-        idle_timeout: minutes before WAN tunnel auto-closes (0=disabled)
-        """
         TerminalDashboard._banner_args = dict(
             serve=serve, share_dir=share_dir,
-            local_url=local_url, token=token,
-            idle_timeout=idle_timeout,
+            urls=urls, token=token, idle_timeout=idle_timeout,
         )
         os.system('cls' if os.name == 'nt' else 'clear')
         w   = _cols()
         bar = '=' * w
 
         serve_label = {
-            'local': f'{_GREEN}LOCAL{_R}  {_DIM}(LAN only - tx.local){_R}',
-            'wan':   f'{_CYAN}WAN{_R}    {_DIM}(Cloudflare tunnel - HTTPS - anywhere){_R}',
-            'both':  f'{_GREEN}LOCAL{_R} + {_CYAN}WAN{_R}  {_DIM}(LAN + Cloudflare - both){_R}',
+            'local': f'{_GREEN}LOCAL{_R}  {_DIM}(LAN){_R}',
+            'wan':   f'{_CYAN}WAN{_R}    {_DIM}(Cloudflare HTTPS){_R}',
+            'both':  f'{_GREEN}LOCAL{_R} + {_CYAN}WAN{_R}',
         }.get(serve, serve)
 
         print(f'{_CYAN}{_B}{bar}{_R}')
@@ -100,8 +95,16 @@ class TerminalDashboard:
         print(f'  {_DIM}Serve       {_R}: {serve_label}')
         print(f'  {_DIM}Sharing     {_R}: {_WHITE}{share_dir}{_R}')
 
-        if local_url:
-            print(f'  {_DIM}Local URL   {_R}: {_GREEN}{_B}{local_url}{_R}')
+        if urls is not None:
+            if urls.custom_local:
+                print(f'  {_DIM}Local URL   {_R}: {_GREEN}{_B}{urls.custom_local}{_R}'
+                      f'  {_DIM}<- try this first{_R}')
+            if urls.hostname_local:
+                label = '  {_DIM}<- if tx.local fails{_R}' if urls.custom_local else ''
+                print(f'  {_DIM}Bonjour URL {_R}: {_GREEN}{urls.hostname_local}{_R}')
+            print(f'  {_DIM}IP URL      {_R}: {_DIM}{urls.raw_ip}{_R}'
+                  f'  {_DIM}<- always works{_R}')
+
         if serve in ('wan', 'both'):
             if tunnel_url:
                 print(f'  {_DIM}Public URL  {_R}: {_CYAN}{_B}{tunnel_url}{_R}')
@@ -110,10 +113,9 @@ class TerminalDashboard:
             if idle_timeout > 0:
                 print(f'  {_DIM}WAN idle    {_R}: {_YELLOW}auto-close after {idle_timeout} min{_R}')
 
-        print(f'  {_DIM}Token       {_R}: {_YELLOW}{_B}{token}{_R}  '
-              f'{_DIM}(rotates each run){_R}')
-        print(f'  {_DIM}Exit        {_R}: {_B}q{_R} + Enter (safe drain)  |  '
-              f'q q = force  |  Ctrl-C = force')
+        print(f'  {_DIM}Token       {_R}: {_YELLOW}{_B}{token}{_R}  {_DIM}(rotates each run){_R}')
+        print(f'  {_DIM}Upload dir  {_R}: {_WHITE}{share_dir}/_uploads/{_R}')
+        print(f'  {_DIM}Exit        {_R}: {_B}q{_R} + Enter (drain)  |  q q = force')
         print(f'{_CYAN}{"-" * w}{_R}')
         print(f'  {_DIM}{"Timestamp":<20}  {"Client":<18}  {"Status":<9}  Event{_R}')
         print(f'{_CYAN}{"-" * w}{_R}')
@@ -122,14 +124,13 @@ class TerminalDashboard:
 
     @classmethod
     def update_tunnel_url(cls, tunnel_url: str) -> None:
-        """Re-draw banner once cloudflared reports its public URL."""
         with cls._ui_lock:
             cls._erase()
             a = cls._banner_args
             cls.clear_banner(
                 serve=a.get('serve', 'both'),
                 share_dir=a.get('share_dir', ''),
-                local_url=a.get('local_url'),
+                urls=a.get('urls'),
                 token=a.get('token', ''),
                 tunnel_url=tunnel_url,
                 idle_timeout=a.get('idle_timeout', 10),

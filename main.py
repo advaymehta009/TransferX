@@ -3,27 +3,28 @@ from __future__ import annotations
 main.py - TransferX entry point.
 
 Usage:
-  uv run python main.py                     # prompt for folder, auto mode
-  uv run python main.py ~/Movies            # share specific folder
-  sudo uv run python main.py ~/Movies       # port 80, URL = http://tx.local/<token>/
+  uv run python main.py                    # prompt for folder, auto mode
+  uv run python main.py ~/Movies           # share specific folder
+  sudo uv run python main.py ~/Movies      # port 80, no port in URL
 
-  --serve local   LAN only   -> http://tx.local:7474/<token>/
-  --serve wan     WAN only   -> https://xxx.trycloudflare.com/<token>/
-  --serve both    LAN + WAN  (default when cloudflared is installed)
+  --serve local   LAN only  (no Cloudflare)
+  --serve wan     Cloudflare tunnel only
+  --serve both    LAN + Cloudflare (default when cloudflared is installed)
 
-  --idle-timeout N  Kill WAN tunnel after N minutes idle (default 10, 0=never)
+  --idle-timeout N  Kill WAN tunnel after N min idle (default 10, 0=never)
   --no-qr           Skip QR code(s)
 
-Local URL is always:  http://tx.local[:port]/<token>/
-  'tx' is a short fixed mDNS name registered via zeroconf.
+Local URLs shown in banner (best-to-worst reliability):
+  http://tx.local:7474/<token>/        <- short fixed name (macOS: dns-sd; Linux: avahi)
+  http://<hostname>.local:7474/<token>/ <- machine's real Bonjour name (always works on macOS)
+  http://192.168.x.x:7474/<token>/    <- raw IP (always works, everywhere)
 
 Safe termination (type q):
-  1. Cloudflare tunnel killed FIRST  <- closes internet exposure immediately
-  2. mDNS unregistered               <- removes LAN discovery
+  1. Cloudflare tunnel killed FIRST  (internet exposure closed immediately)
+  2. mDNS unregistered
   3. Stop accepting new connections
-  4. Wait for in-flight transfers to finish (drain, up to --drain-timeout s)
-  5. Full exit
-  Type q a second time during drain to force-exit immediately.
+  4. Wait up to 60s for in-flight transfers to finish
+  5. Type q again during drain to force-exit
 """
 
 import argparse
@@ -36,14 +37,16 @@ import sys
 import threading
 import time
 
+import mdns
 import server as srv
 import tunnel as tun
+import uploader as _up
 from dashboard import TerminalDashboard
 from tracker import BUFFER_SIZE, TransferTracker
 import logger
 
-LOCAL_PORT     = 7474
-DRAIN_TIMEOUT  = 60    # seconds to wait for in-flight transfers on q
+LOCAL_PORT    = 7474
+DRAIN_TIMEOUT = 60
 
 
 # ---- Token ------------------------------------------------------------------
@@ -53,7 +56,7 @@ def _new_token() -> str:
     return ''.join(secrets.choice(alpha) for _ in range(8))
 
 
-# ---- Network ----------------------------------------------------------------
+# ---- LAN IP -----------------------------------------------------------------
 
 def _lan_ip() -> str:
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -64,42 +67,6 @@ def _lan_ip() -> str:
         return '127.0.0.1'
     finally:
         s.close()
-
-
-# ---- mDNS -------------------------------------------------------------------
-
-def _register_mdns(ip: str, port: int, token: str) -> object | None:
-    """
-    Register 'tx.local' via zeroconf.
-
-    ServiceInfo with server='tx.local.' publishes:
-      - PTR/SRV/TXT records for _http._tcp.local. (service browser discovery)
-      - An A record: tx.local -> ip  (hostname resolution for http://tx.local/...)
-
-    'tx' is short, fixed, memorable — same name every run regardless of
-    the machine hostname. Bonjour (macOS/iOS) and Avahi (Linux/Android) both
-    resolve it on the LAN without any manual configuration.
-    """
-    try:
-        from zeroconf import Zeroconf, ServiceInfo
-        info = ServiceInfo(
-            '_http._tcp.local.',
-            'TransferX._http._tcp.local.',
-            addresses=[socket.inet_aton(ip)],
-            port=port,
-            properties={'path': f'/{token}/'},
-            server='tx.local.',
-        )
-        zc = Zeroconf()
-        zc.register_service(info)
-        return zc
-    except Exception:
-        return None
-
-
-def _local_url(port: int, token: str) -> str:
-    port_part = '' if port == 80 else f':{port}'
-    return f'http://tx.local{port_part}/{token}/'
 
 
 # ---- QR ---------------------------------------------------------------------
@@ -127,7 +94,6 @@ _draining        = False
 
 
 def _kill_tunnel(cf_proc) -> None:
-    """Terminate the Cloudflare process. Fast — closes internet exposure."""
     if cf_proc is not None:
         try:
             cf_proc.terminate()
@@ -136,24 +102,13 @@ def _kill_tunnel(cf_proc) -> None:
             pass
 
 
-def _unregister_mdns(zc) -> None:
-    if zc is not None:
-        try: zc.close()
-        except Exception: pass
-
-
 def _drain_transfers(httpd) -> None:
-    """
-    Close the server socket (stop new connections) then wait for
-    in-flight transfers to finish or DRAIN_TIMEOUT to expire.
-    """
     global _draining
     _draining = True
     try:
         httpd.socket.close()
     except Exception:
         pass
-
     deadline = time.monotonic() + DRAIN_TIMEOUT
     while time.monotonic() < deadline:
         n = TransferTracker.active_count()
@@ -161,19 +116,15 @@ def _drain_transfers(httpd) -> None:
             print('  All transfers complete.')
             return
         remaining = int(deadline - time.monotonic())
-        print(f'\r  Draining: {n} transfer(s) in progress... ({remaining}s to force)  ',
+        print(f'\r  Draining: {n} transfer(s) in progress... ({remaining}s)  ',
               end='', flush=True)
         time.sleep(0.5)
     print(f'\n  Drain timeout ({DRAIN_TIMEOUT}s) — forcing exit.')
 
 
-def _do_shutdown(httpd, zc, cf_proc, force: bool = False) -> None:
+def _do_shutdown(httpd, mdns_handle, cf_proc, force: bool = False) -> None:
     """
-    Ordered shutdown:
-      1. Kill WAN tunnel first  (internet exposure closed immediately)
-      2. Unregister mDNS        (LAN discovery gone)
-      3. Drain in-flight transfers (unless force=True)
-      4. Stop server + exit
+    Ordered shutdown — internet closed FIRST, then drain local transfers.
     """
     global _shutdown_called
     with _shutdown_lock:
@@ -183,14 +134,14 @@ def _do_shutdown(httpd, zc, cf_proc, force: bool = False) -> None:
 
     TerminalDashboard.shutdown_clean()
 
-    # Step 1 — kill internet exposure FIRST, regardless of anything else
+    # 1. Kill internet exposure immediately
     _kill_tunnel(cf_proc)
-    TerminalDashboard.log_row('system', 'WAN tunnel closed', '', 'INFO')
 
-    # Step 2 — remove mDNS registration
-    _unregister_mdns(zc)
+    # 2. Remove LAN discovery
+    if mdns_handle is not None:
+        mdns_handle.close()
 
-    # Step 3 — drain or force
+    # 3. Drain or force
     active = TransferTracker.active_count()
     if active > 0 and not force:
         print(f'\n  {active} transfer(s) still active.')
@@ -201,8 +152,8 @@ def _do_shutdown(httpd, zc, cf_proc, force: bool = False) -> None:
         try: httpd.socket.close()
         except Exception: pass
 
-    # Step 4 — full server stop
-    print('\n  Shutting down server...')
+    # 4. Stop server
+    print('\n  Shutting down...')
     try:
         httpd.shutdown()
         httpd.server_close()
@@ -225,20 +176,17 @@ def main() -> None:
                         help='Folder to share (prompt if omitted)')
     parser.add_argument(
         '--serve', choices=['local', 'wan', 'both', 'auto'], default='auto',
-        help=(
-            'local = LAN only (http://tx.local:7474/<token>/)  '
-            'wan = Cloudflare tunnel only  '
-            'both = LAN + tunnel  '
-            'auto = both if cloudflared installed, else local'
-        ),
+        help='local=LAN only  wan=tunnel only  both=LAN+tunnel  '
+             'auto=both if cloudflared installed, else local',
     )
     parser.add_argument('--port', '-p', type=int, default=None,
                         help=f'Local port (default {LOCAL_PORT}; 80 if sudo)')
     parser.add_argument(
         '--idle-timeout', type=int, default=10, metavar='MINUTES',
-        help='Kill WAN tunnel after N minutes of no activity (0=never, default 10)',
+        help='Kill WAN tunnel after N minutes idle (0=never, default 10)',
     )
-    parser.add_argument('--no-qr', action='store_true', help='Skip QR code(s)')
+    parser.add_argument('--no-qr', action='store_true',
+                        help='Skip QR code(s)')
     args = parser.parse_args()
 
     # ---- resolve --serve ----------------------------------------------------
@@ -278,10 +226,14 @@ def main() -> None:
     os.chdir(share_dir)
     srv.TurboHandler.share_root = share_dir
 
+    # Initialise upload manager — creates _uploads/ sub-dir
+    upload_dir = os.path.join(share_dir, '_uploads')
+    srv.UPLOAD_MGR = _up.UploadManager(upload_dir)
+
     # ---- token + server globals ---------------------------------------------
     token = _new_token()
-    srv.SESSION_TOKEN    = token
-    srv.WAN_MODE_ACTIVE  = wants_tunnel
+    srv.SESSION_TOKEN   = token
+    srv.WAN_MODE_ACTIVE = wants_tunnel
 
     # ---- port ---------------------------------------------------------------
     if args.port:
@@ -298,10 +250,24 @@ def main() -> None:
     ip = _lan_ip()
 
     # ---- mDNS ---------------------------------------------------------------
-    zc        = None
-    local_url = _local_url(port, token)
+    mdns_handle = None
+    urls        = None
+
     if wants_local:
-        zc = _register_mdns(ip, port, token)
+        mdns_handle, urls = mdns.register(ip, port, token)
+    else:
+        # wan-only: still compute raw IP URL for the banner
+        pp   = '' if port == 80 else f':{port}'
+        urls = mdns.URLs(
+            custom_local   = None,
+            hostname_local = None,
+            raw_ip         = f'http://{ip}{pp}/{token}/',
+        )
+
+    # Primary local URL for QR: prefer tx.local, fall back to hostname, then IP
+    primary_local = (urls.custom_local
+                     or urls.hostname_local
+                     or urls.raw_ip)
 
     # ---- Cloudflare tunnel --------------------------------------------------
     cf_proc = None
@@ -309,10 +275,8 @@ def main() -> None:
     if wants_tunnel:
         def _on_idle_close():
             TerminalDashboard.log_row(
-                'system',
-                'WAN tunnel closed',
-                f'idle > {args.idle_timeout} min — internet exposure removed',
-                'WARN',
+                'system', 'WAN tunnel auto-closed',
+                f'idle > {args.idle_timeout} min', 'WARN',
             )
 
         def _on_url(cf_url: str):
@@ -336,24 +300,24 @@ def main() -> None:
             idle_timeout_minutes=args.idle_timeout,
         )
 
-    # ---- banner + QR --------------------------------------------------------
+    # ---- banner -------------------------------------------------------------
     TerminalDashboard.clear_banner(
         serve=serve,
         share_dir=share_dir,
-        local_url=local_url if wants_local else None,
+        urls=urls if wants_local else None,
         token=token,
         tunnel_url=None,
         idle_timeout=args.idle_timeout if wants_tunnel else 0,
     )
 
+    # QR for local mode (tunnel QR fires async via _on_url)
     if wants_local and not args.no_qr:
-        _print_qr(local_url,
-                  'LAN — scan on same Wi-Fi:' if serve == 'both' else '')
+        label = 'LAN — scan on same Wi-Fi:' if serve == 'both' else ''
+        _print_qr(primary_local, label)
 
     # ---- log ----------------------------------------------------------------
     logger.log('INFO', 'TransferX started', {
-        'serve': serve,
-        'port': port,
+        'serve': serve, 'port': port,
         'idle_timeout_minutes': args.idle_timeout if wants_tunnel else None,
         'share_dir_basename': os.path.basename(share_dir),
         'buffer_size_bytes': BUFFER_SIZE,
@@ -361,12 +325,12 @@ def main() -> None:
 
     # ---- signals ------------------------------------------------------------
     def _sig(signum, frame):
-        _do_shutdown(httpd, zc, cf_proc)
+        _do_shutdown(httpd, mdns_handle, cf_proc)
 
     signal.signal(signal.SIGINT,  _sig)
     signal.signal(signal.SIGTERM, _sig)
 
-    # ---- background threads -------------------------------------------------
+    # ---- threads ------------------------------------------------------------
     threading.Thread(target=httpd.serve_forever, daemon=True).start()
     threading.Thread(target=_refresh_loop,       daemon=True).start()
 
@@ -376,12 +340,11 @@ def main() -> None:
             cmd = input().strip().lower()
             if cmd in ('q', 'quit', 'exit'):
                 if _draining:
-                    # Second q = force exit
-                    _do_shutdown(httpd, zc, cf_proc, force=True)
+                    _do_shutdown(httpd, mdns_handle, cf_proc, force=True)
                 else:
-                    _do_shutdown(httpd, zc, cf_proc)
+                    _do_shutdown(httpd, mdns_handle, cf_proc)
         except (KeyboardInterrupt, EOFError):
-            _do_shutdown(httpd, zc, cf_proc)
+            _do_shutdown(httpd, mdns_handle, cf_proc)
 
 
 def _refresh_loop() -> None:
