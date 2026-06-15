@@ -1,3 +1,5 @@
+![GitHub Downloads (all assets)](https://img.shields.io/github/downloads/advaymehta009/TransferX/total?color=blue&style=flat-square)
+
 # ⚡ TransferX
 
 Zero-config **HTTPS** file transfer over your local network.  
