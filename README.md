@@ -133,3 +133,15 @@ Download the optimized standalone binary for your operating system from the **Re
 ## Requirements
 
 Python 3.11+ · `cryptography` · `segno` (both auto-installed by `uv sync`)
+
+
+
+## Star History
+
+<a href="https://www.star-history.com/?repos=advaymehta009%2FTransferX&type=date&logscale=&legend=top-left">
+ <picture>
+   <source media="(prefers-color-scheme: dark)" srcset="https://api.star-history.com/chart?repos=advaymehta009/TransferX&type=date&theme=dark&logscale&legend=top-left&sealed_token=zq5GqYPuwXuKgJhJPHkzDiREwFgzL4VlirD73VJSRkICR8rOaf0GLyAQr71DPUfXqO1c-aTSJIm6NZdP9p_33CLtk83yJJNXEfudgxr7U4WGibriv18r7JJxO3jt3YYsQK9wx5q1sco7xDuGPqka-XIw6lxckDAni2JATtbXN9q_tjpIoz7_s4qOJ1Ba" />
+   <source media="(prefers-color-scheme: light)" srcset="https://api.star-history.com/chart?repos=advaymehta009/TransferX&type=date&logscale&legend=top-left&sealed_token=zq5GqYPuwXuKgJhJPHkzDiREwFgzL4VlirD73VJSRkICR8rOaf0GLyAQr71DPUfXqO1c-aTSJIm6NZdP9p_33CLtk83yJJNXEfudgxr7U4WGibriv18r7JJxO3jt3YYsQK9wx5q1sco7xDuGPqka-XIw6lxckDAni2JATtbXN9q_tjpIoz7_s4qOJ1Ba" />
+   <img alt="Star History Chart" src="https://api.star-history.com/chart?repos=advaymehta009/TransferX&type=date&logscale&legend=top-left&sealed_token=zq5GqYPuwXuKgJhJPHkzDiREwFgzL4VlirD73VJSRkICR8rOaf0GLyAQr71DPUfXqO1c-aTSJIm6NZdP9p_33CLtk83yJJNXEfudgxr7U4WGibriv18r7JJxO3jt3YYsQK9wx5q1sco7xDuGPqka-XIw6lxckDAni2JATtbXN9q_tjpIoz7_s4qOJ1Ba" />
+ </picture>
+</a>
